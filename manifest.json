@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "Facebook Ads Library Scraper",
+  "version": "1.0",
+  "description": "Extract and download Facebook Ads Library content as JSON",
+  "content_scripts": [
+    {
+      "matches": ["https://www.facebook.com/ads/library/*"],
+      "js": ["content.js"]
+    }
+  ],
+  "permissions": [
+    "storage"
+  ]
+}
