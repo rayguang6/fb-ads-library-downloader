@@ -1,3 +1,8 @@
+const SUPABASE_URL = 'https://scblfinzevcnuzibkhgt.supabase.co'; // Your Supabase URL
+const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNjYmxmaW56ZXZjbnV6aWJraGd0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDI1NTM1MDcsImV4cCI6MjA1ODEyOTUwN30.tYsF007oi9FgrfQIxvo-quaaH6TbUqDQ_Pb1sVKy4fo'; // Replace with your actual Supabase anon key
+const STORAGE_BUCKET = 'ads-media'; // Your storage bucket name (adjust if needed)
+const DATABASE_TABLE = 'facebook_ads'; // The name of your database table
+
 // Function to extract data from an ad container
 function extractAdData(adContainer) {
   const adData = {
@@ -8,7 +13,6 @@ function extractAdData(adContainer) {
     advertiserName: null,
     adText: null,
     mediaUrls: [],
-    adLink:null,
     timestamp: new Date().toISOString()
   };
 
@@ -57,16 +61,10 @@ function extractAdData(adContainer) {
       adData.advertiserProfileImage = profileImgEl.src;
     }
 
-    // NEW: Get the ad link by looking for a specific anchor
-    const adLinkEl = adContainer.querySelector('a[href*="l.facebook.com/l.php?u="]');
-    if (adLinkEl) {
-      adData.adLink = adLinkEl.href;
-    }
-
     // 5. Get Ad Text (existing logic)
     const adTextEl = adContainer.querySelector('div._7jyr span');
-    if (adTextEl && adTextEl.textContent) {
-      adData.adText = adTextEl.textContent.trim();
+    if (adTextEl && adTextEl.innerText) {
+      adData.adText = adTextEl.innerText;
     }
 
     // First priority: Get video if available
@@ -141,24 +139,103 @@ function extractAdData(adContainer) {
   return adData;
 }
 
-// Function to download JSON data
-function downloadJSON(data, filename = 'fb_ad_data.json') {
-  const jsonString = JSON.stringify(data, null, 2);
-  const blob = new Blob([jsonString], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  
-  const link = document.createElement("a");
-  link.setAttribute("href", url);
-  link.setAttribute("download", filename);
-  document.body.appendChild(link);
-  
-  // Trigger download
-  link.click();
-  
-  // Clean up
-  document.body.removeChild(link);
-  URL.revokeObjectURL(url);
+// Function to upload media to Supabase
+async function uploadToSupabase(mediaUrl, mediaType, fileName) {
+  try {
+    // Fetch the media file
+    const response = await fetch(mediaUrl);
+    if (!response.ok) {
+      throw new Error(`Failed to fetch media: ${response.status} ${response.statusText}`);
+    }
+    
+    // Get the file as a blob
+    const blob = await response.blob();
+    
+    // Set file extension based on media type
+    const fileExt = mediaType === 'video' ? 'mp4' : 'jpg';
+    const fullFileName = `${fileName}.${fileExt}`;
+    const file = new File([blob], fullFileName, { 
+      type: mediaType === 'video' ? 'video/mp4' : 'image/jpeg' 
+    });
+    
+    // Prepare form data for the upload
+    const formData = new FormData();
+    formData.append('file', file);
+    
+    // Construct the upload URL (Supabase Storage endpoint)
+    const uploadPath = `${SUPABASE_URL}/storage/v1/object/${STORAGE_BUCKET}/${fullFileName}`;
+    
+    // Make the POST request to upload the file
+    const uploadResponse = await fetch(uploadPath, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${SUPABASE_KEY}`,
+        'apikey': SUPABASE_KEY
+      },
+      body: formData
+    });
+    
+    if (!uploadResponse.ok) {
+      const errorData = await uploadResponse.json();
+      throw new Error(`Supabase upload failed: ${errorData.error || uploadResponse.statusText}`);
+    }
+    
+    const result = await uploadResponse.json();
+    
+    // Create the public URL for the stored file (based on Supabase docs)
+    const publicUrl = `${SUPABASE_URL}/storage/v1/object/public/${STORAGE_BUCKET}/${fullFileName}`;
+    
+    return { result, publicUrl };
+  } catch (error) {
+    console.error('Error uploading to Supabase:', error);
+    throw error;
+  }
 }
+
+// Function to save ad data to Supabase database
+async function saveToSupabaseDatabase(adData, publicFileUrl = null) {
+  try {
+    // Prepare a record mapping your adData fields to the database columns.
+    // Ensure your Supabase table has matching column names.
+    const record = {
+      library_id: adData.libraryId || '',
+      started_running_on: adData.startedRunningOn || '',
+      advertiser_profile_image: adData.advertiserProfileImage || '',
+      advertiser_profile_link: adData.advertiserProfileLink || '',
+      advertiser_name: adData.advertiserName || '',
+      ad_text: adData.adText || '',
+      media_type: adData.mediaUrls.length > 0 ? adData.mediaUrls[0].type : '',
+      // Use the publicFileUrl from the upload, or if not available, the URL from adData
+      media_url: publicFileUrl || (adData.mediaUrls.length > 0 ? adData.mediaUrls[0].url : ''),
+      captured_at: adData.timestamp || new Date().toISOString()
+    };
+
+    const response = await fetch(`${SUPABASE_URL}/rest/v1/${DATABASE_TABLE}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${SUPABASE_KEY}`,
+        'apikey': SUPABASE_KEY,
+        'Prefer': 'return=representation'
+      },
+      body: JSON.stringify(record)
+    });
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('Database insert error:', errorText);
+      throw new Error(`Database insert failed: ${response.status} - ${errorText}`);
+    }
+    
+    const result = await response.json();
+    console.log('Database insert successful:', result);
+    return result;
+  } catch (error) {
+    console.error('Error saving to Supabase database:', error);
+    throw error;
+  }
+}
+
 
 // Function to add button to an ad container
 function addButtonToContainer(container) {
@@ -169,7 +246,7 @@ function addButtonToContainer(container) {
   
   // Create button
   const button = document.createElement('button');
-  button.textContent = 'Download JSON';
+  button.textContent = 'Download ↓';
   button.className = 'fb-ad-button';
   button.style.cssText = `
     background-color: #1877F2;
@@ -186,55 +263,58 @@ function addButtonToContainer(container) {
     z-index: 999;
   `;
   
-  // Add click event
   button.addEventListener('click', async (event) => {
     event.preventDefault();
     event.stopPropagation();
     
-    // Get ad data
+    // Get ad data from the container
     const adData = extractAdData(container);
     
-    // Visual feedback during process
-    button.textContent = 'Processing...';
+    // Change button text to indicate processing
+    button.textContent = 'Uploading...';
+    button.style.backgroundColor = '#FFA500'; // Orange
     
     try {
-      // Generate filename with the advertiser name and library ID
+      // Generate a filename using advertiser name, library ID, and timestamp
       let fileName = 'fb_ad';
       if (adData.advertiserName) {
-        // Create a safe filename by removing special characters
         const safeAdvertiserName = adData.advertiserName.replace(/[^a-z0-9]/gi, '_').toLowerCase();
         fileName = `${safeAdvertiserName}`;
       }
       if (adData.libraryId) {
         fileName += `_${adData.libraryId}`;
       }
-      
-      // Add timestamp to ensure uniqueness
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
       fileName += `_${timestamp}`;
       
-      // Download the JSON
-      // downloadJSON(adData, `${fileName}.json`);
+      // If media exists, upload it
+      let publicUrl = null;
+      if (adData.mediaUrls.length > 0) {
+        const media = adData.mediaUrls[0];
+        const uploadResult = await uploadToSupabase(media.url, media.type, fileName);
+        publicUrl = uploadResult.publicUrl;
+      }
       
-      // Visual feedback on success
-      button.textContent = 'Downloaded!';
-      button.style.backgroundColor = '#4BB543'; // Green on success
+      // Save the ad data to Supabase database
+      await saveToSupabaseDatabase(adData, publicUrl);
       
-      // Log to console for additional debugging
-      console.log('Extracted Ad Data:', adData);
+      // Visual feedback for success
+      button.textContent = 'Uploaded!';
+      button.style.backgroundColor = '#4BB543'; // Green
     } catch (error) {
       // Visual feedback on error
       button.textContent = 'Error!';
-      button.style.backgroundColor = '#FF0000'; // Red on error
-      console.error('Failed to download:', error);
+      button.style.backgroundColor = '#FF0000'; // Red
+      console.error('Failed to upload:', error);
     }
     
-    // Reset after 2 seconds
+    // Reset button text and style after a delay
     setTimeout(() => {
-      button.textContent = 'Download JSON';
+      button.textContent = 'Download';
       button.style.backgroundColor = '#1877F2';
     }, 2000);
   });
+  
   
   // Add the button to the container
   container.style.position = 'relative';

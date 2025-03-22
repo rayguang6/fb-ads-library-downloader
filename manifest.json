@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "Facebook Ads Library Scraper",
+  "name": "Facebook Ads Library Downloder",
   "version": "1.0",
   "description": "Extract and download Facebook Ads Library content as JSON",
   "content_scripts": [
