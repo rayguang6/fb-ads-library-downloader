@@ -1,15 +1,27 @@
 {
   "manifest_version": 3,
-  "name": "Facebook Ads Library Downloder",
+  "name": "Facebook Ads Library Downloader",
   "version": "1.0",
   "description": "Extract and download Facebook Ads Library content as JSON",
   "content_scripts": [
     {
-      "matches": ["https://www.facebook.com/ads/library/*"],
-      "js": ["content.js"]
+      "matches": ["*://*.facebook.com/ads/library/*"],
+      "js": ["content.js"],
+      "run_at": "document_end",
+      "all_frames": true
     }
   ],
   "permissions": [
-    "storage"
-  ]
+    "storage",
+    "activeTab",
+    "scripting"
+  ],
+  "host_permissions": [
+    "*://*.facebook.com/*",
+    "https://scblfinzevcnuzibkhgt.supabase.co/*"
+  ],
+  "web_accessible_resources": [{
+    "resources": ["content.js"],
+    "matches": ["*://*.facebook.com/*"]
+  }]
 }

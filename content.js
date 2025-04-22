@@ -237,19 +237,20 @@ async function saveToSupabaseDatabase(adData, publicFileUrl = null) {
 }
 
 
+
 // Function to add button to an ad container
 function addButtonToContainer(container) {
   // Skip if already has our button
-  if (container.querySelector('.fb-ad-button')) {
+  if (container.querySelector('.my-fb-ad-button')) {
     return;
   }
   
   // Create button
   const button = document.createElement('button');
   button.textContent = 'Download ↓';
-  button.className = 'fb-ad-button';
+  button.className = 'my-fb-ad-button';
   button.style.cssText = `
-    background-color: #1877F2;
+    background-color: #800080;
     color: white;
     border: none;
     border-radius: 4px;
@@ -310,8 +311,8 @@ function addButtonToContainer(container) {
     
     // Reset button text and style after a delay
     setTimeout(() => {
-      button.textContent = 'Download';
-      button.style.backgroundColor = '#1877F2';
+      button.textContent = 'Download ↓';
+      button.style.backgroundColor = '#800080';
     }, 2000);
   });
   
@@ -322,21 +323,138 @@ function addButtonToContainer(container) {
 }
 
 // Find ad containers and add buttons
-function addButtonsToAds() {
-  // Based on the actual HTML, this is the most reliable selector
-  document.querySelectorAll('.xh8yej3 > ._7jvw').forEach(container => {
-    // Skip containers that are too small
-    if (container.offsetWidth < 100 || container.offsetHeight < 100) {
-      return;
-    }
+// function addButtonsToAds() {
+//   // Based on the actual HTML, this is the most reliable selector
+//   document.querySelectorAll('.x1dr75xp.xh8yej3.x16md763 > .xrvj5dj').forEach(container => {
+//     // document.querySelectorAll('[class*="xh8yej3"][class*="x18m771g"]').forEach(container => {
+
+
+//     // parent:  <div class="x1dr75xp xh8yej3 x16md763">
+//     // we target: <div class="xrvj5dj x18m771g x1p5oq8j xbxaen2 x18d9i69 x1u72gb5 xtqikln x1na6gtj x1jr1mh3 xm39877 x7sq92a xxy4fzi">
+//     // document.querySelectorAll('[class*="xrvj5dj"][class*="x18m771g"]').forEach(container => {
+//     // Skip containers that are too small
+//     if (container.offsetWidth < 100 || container.offsetHeight < 100) {
+//       return;
+//     }
     
-    addButtonToContainer(container);
+//     addButtonToContainer(container);
+//   });
+// }
+
+function addButtonsToAds() {
+  console.log("Looking for ad cards based on Library ID elements...");
+  
+  // Find elements containing "Library ID:" text, but with more specific targeting
+  const libraryIdElements = Array.from(document.querySelectorAll('div[class*="Library ID"], span[class*="Library ID"]'))
+    .filter(el => el.textContent && el.textContent.includes('Library ID:'));
+  
+  if (libraryIdElements.length === 0) {
+    // Fallback to a broader search if specific selectors don't work
+    const allElements = Array.from(document.querySelectorAll('div, span'))
+      .filter(el => el.textContent && el.textContent.includes('Library ID:'));
+    
+    if (allElements.length > 0) {
+      console.log(`Found ${allElements.length} Library ID elements using broader search`);
+      processLibraryIdElements(allElements);
+    } else {
+      console.log("No Library ID elements found");
+    }
+  } else {
+    console.log(`Found ${libraryIdElements.length} Library ID elements using specific selectors`);
+    processLibraryIdElements(libraryIdElements);
+  }
+}
+
+function processLibraryIdElements(elements) {
+  elements.forEach((idEl, index) => {
+    // Find the ad card container
+    let adCard = findAdCardContainer(idEl);
+    
+    if (adCard) {
+      // Only add button if the container doesn't already have one
+      if (!adCard.querySelector('.my-fb-ad-button')) {
+        addButtonToContainer(adCard);
+      }
+    }
   });
 }
 
+function findAdCardContainer(element) {
+  // Walk up to find the container that is likely an ad card
+  let current = element;
+  let level = 0;
+  const maxLevels = 6;  // Don't go up too far
+  
+  while (current && level < maxLevels) {
+    current = current.parentElement;
+    level++;
+    
+    if (!current) break;
+    
+    // Check if this could be an ad card
+    if (current.offsetWidth > 300 && current.offsetHeight > 250) {
+      // Must contain certain ad-related text
+      const text = current.textContent || '';
+      const hasSeeAdDetails = text.includes('See ad details');
+      const hasStartedRunning = text.includes('Started running on');
+      const hasSponsored = text.includes('Sponsored');
+      
+      // Must have at least two of these characteristics to be an ad card
+      if ((hasSeeAdDetails && hasStartedRunning) || 
+          (hasSeeAdDetails && hasSponsored) || 
+          (hasStartedRunning && hasSponsored)) {
+        
+        // Additional check: must contain platform icons or total active time text
+        if (text.includes('Total active time') || 
+            current.querySelector('img[src*="facebook"]') || 
+            current.querySelector('svg[class*="platform"]')) {
+          
+          return current;
+        }
+      }
+    }
+  }
+  
+  return null;
+}
+
+
 // Set up observer to watch for new ads being loaded
-const observer = new MutationObserver(addButtonsToAds);
-observer.observe(document.body, { childList: true, subtree: true });
+// const observer = new MutationObserver(addButtonsToAds);
+// observer.observe(document.body, { childList: true, subtree: true });
+
+// Set up observer to watch for new content
+const observer = new MutationObserver((mutations) => {
+  let shouldCheck = false;
+  
+  for (const mutation of mutations) {
+    if (mutation.addedNodes.length > 0) {
+      // Check if any substantial elements were added
+      for (const node of mutation.addedNodes) {
+        if (node.nodeType === 1 && (node.tagName === 'DIV' || node.tagName === 'SECTION')) {
+          shouldCheck = true;
+          break;
+        }
+      }
+      
+      if (shouldCheck) break;
+    }
+  }
+  
+  if (shouldCheck) {
+    // Wait a bit for the content to fully render
+    setTimeout(addButtonsToAds, 500);
+  }
+});
+
+// Start observing with appropriate options
+observer.observe(document.body, {
+  childList: true,
+  subtree: true
+});
+
+// Add periodic checker as a backup
+setInterval(addButtonsToAds, 3000);
 
 // Initial run to add buttons to existing ads
 addButtonsToAds();
