@@ -1,7 +1,10 @@
-const SUPABASE_URL = 'https://scblfinzevcnuzibkhgt.supabase.co'; // Your Supabase URL
-const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNjYmxmaW56ZXZjbnV6aWJraGd0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDI1NTM1MDcsImV4cCI6MjA1ODEyOTUwN30.tYsF007oi9FgrfQIxvo-quaaH6TbUqDQ_Pb1sVKy4fo'; // Replace with your actual Supabase anon key
-const STORAGE_BUCKET = 'ads-media'; // Your storage bucket name (adjust if needed)
-const DATABASE_TABLE = 'facebook_ads'; // The name of your database table
+const SUPABASE_URL = 'https://scblfinzevcnuzibkhgt.supabase.co';
+const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNjYmxmaW56ZXZjbnV6aWJraGd0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDI1NTM1MDcsImV4cCI6MjA1ODEyOTUwN30.tYsF007oi9FgrfQIxvo-quaaH6TbUqDQ_Pb1sVKy4fo';
+const STORAGE_BUCKET = 'ads-media';
+const DATABASE_TABLE = 'facebook_ads';
+
+// Cache to prevent duplicate processing
+const processedAds = new Set();
 
 // Function to extract data from an ad container
 function extractAdData(adContainer) {
@@ -124,8 +127,6 @@ function extractAdData(adContainer) {
       }
     }
 
-
-
     // Add debugging data for verification
     adData.debug = {
       containerHTML: adContainer.outerHTML.substring(0, 500) + '...' // First 500 chars for debugging
@@ -236,8 +237,6 @@ async function saveToSupabaseDatabase(adData, publicFileUrl = null) {
   }
 }
 
-
-
 // Function to add button to an ad container
 function addButtonToContainer(container) {
   // Skip if already has our button
@@ -316,69 +315,139 @@ function addButtonToContainer(container) {
     }, 2000);
   });
   
-  
   // Add the button to the container
   container.style.position = 'relative';
   container.appendChild(button);
 }
 
-// Find ad containers and add buttons
-// function addButtonsToAds() {
-//   // Based on the actual HTML, this is the most reliable selector
-//   document.querySelectorAll('.x1dr75xp.xh8yej3.x16md763 > .xrvj5dj').forEach(container => {
-//     // document.querySelectorAll('[class*="xh8yej3"][class*="x18m771g"]').forEach(container => {
-
-
-//     // parent:  <div class="x1dr75xp xh8yej3 x16md763">
-//     // we target: <div class="xrvj5dj x18m771g x1p5oq8j xbxaen2 x18d9i69 x1u72gb5 xtqikln x1na6gtj x1jr1mh3 xm39877 x7sq92a xxy4fzi">
-//     // document.querySelectorAll('[class*="xrvj5dj"][class*="x18m771g"]').forEach(container => {
-//     // Skip containers that are too small
-//     if (container.offsetWidth < 100 || container.offsetHeight < 100) {
-//       return;
-//     }
-    
-//     addButtonToContainer(container);
-//   });
-// }
-
-function addButtonsToAds() {
-  console.log("Looking for ad cards based on Library ID elements...");
-  
-  // Find elements containing "Library ID:" text, but with more specific targeting
-  const libraryIdElements = Array.from(document.querySelectorAll('div[class*="Library ID"], span[class*="Library ID"]'))
-    .filter(el => el.textContent && el.textContent.includes('Library ID:'));
-  
-  if (libraryIdElements.length === 0) {
-    // Fallback to a broader search if specific selectors don't work
-    const allElements = Array.from(document.querySelectorAll('div, span'))
-      .filter(el => el.textContent && el.textContent.includes('Library ID:'));
-    
-    if (allElements.length > 0) {
-      console.log(`Found ${allElements.length} Library ID elements using broader search`);
-      processLibraryIdElements(allElements);
-    } else {
-      console.log("No Library ID elements found");
+// Create a unique identifier for an ad container to prevent duplicate processing
+function getAdIdentifier(adContainer) {
+  // Extract library ID if available
+  let libraryId = '';
+  const libraryIdEl = adContainer.querySelector('span');
+  if (libraryIdEl && libraryIdEl.textContent && libraryIdEl.textContent.includes('Library ID:')) {
+    const match = libraryIdEl.textContent.match(/Library ID:\s*(\d+)/);
+    if (match && match[1]) {
+      libraryId = match[1];
     }
-  } else {
-    console.log(`Found ${libraryIdElements.length} Library ID elements using specific selectors`);
-    processLibraryIdElements(libraryIdElements);
   }
+  
+  // Get advertiser name if available
+  let advertiserName = '';
+  const advertiserEl = adContainer.querySelector('a.xt0psk2');
+  if (advertiserEl) {
+    advertiserName = advertiserEl.textContent.trim();
+  }
+  
+  // Combine with container dimensions for uniqueness
+  const rect = adContainer.getBoundingClientRect();
+  return `${libraryId}_${advertiserName}_${rect.width}_${rect.height}_${adContainer.offsetTop}`;
 }
 
-function processLibraryIdElements(elements) {
-  elements.forEach((idEl, index) => {
-    // Find the ad card container
-    let adCard = findAdCardContainer(idEl);
+// Improved function combining your specific class selectors with additional approaches
+function findAndProcessAdCards() {
+  let newButtonsAdded = 0;
+  
+  // APPROACH 1: Directly target your specific class combinations
+  // First try: parent class x1dr75xp.xh8yej3.x16md763 with child xrvj5dj
+  const specificParents = document.querySelectorAll('.x1dr75xp.xh8yej3.x16md763');
+  console.log(`Found ${specificParents.length} specific parent containers`);
+  
+  for (const parent of specificParents) {
+    const childContainers = parent.querySelectorAll('.xrvj5dj');
     
-    if (adCard) {
-      // Only add button if the container doesn't already have one
-      if (!adCard.querySelector('.my-fb-ad-button')) {
-        addButtonToContainer(adCard);
+    for (const container of childContainers) {
+      // Skip small containers
+      if (container.offsetWidth < 100 || container.offsetHeight < 100) continue;
+      
+      const adId = getAdIdentifier(container);
+      
+      if (!processedAds.has(adId) && !container.querySelector('.my-fb-ad-button')) {
+        processedAds.add(adId);
+        addButtonToContainer(container);
+        newButtonsAdded++;
+        console.log(`Added button to container via specific classes (approach 1)`);
       }
     }
-  });
+  }
+  
+  // APPROACH 2: Try the alternative class selector xrvj5dj.x18m771g
+  if (newButtonsAdded === 0) {
+    const altContainers = document.querySelectorAll('.xrvj5dj.x18m771g');
+    console.log(`Found ${altContainers.length} containers with alternative classes`);
+    
+    for (const container of altContainers) {
+      // Skip small containers
+      if (container.offsetWidth < 100 || container.offsetHeight < 100) continue;
+      
+      const adId = getAdIdentifier(container);
+      
+      if (!processedAds.has(adId) && !container.querySelector('.my-fb-ad-button')) {
+        processedAds.add(adId);
+        addButtonToContainer(container);
+        newButtonsAdded++;
+        console.log(`Added button to container via alternative classes (approach 2)`);
+      }
+    }
+  }
+  
+  // APPROACH 3: General search for containers with xh8yej3 class
+  if (newButtonsAdded === 0) {
+    const generalContainers = document.querySelectorAll('div.xh8yej3');
+    console.log(`Found ${generalContainers.length} potential containers with xh8yej3 class`);
+    
+    for (const container of generalContainers) {
+      // Skip if it doesn't match size criteria or doesn't have Library ID
+      if (container.offsetWidth < 300 || container.offsetHeight < 200) continue;
+      if (!container.textContent.includes('Library ID:')) continue;
+      
+      const adId = getAdIdentifier(container);
+      
+      if (!processedAds.has(adId) && !container.querySelector('.my-fb-ad-button')) {
+        processedAds.add(adId);
+        addButtonToContainer(container);
+        newButtonsAdded++;
+        console.log(`Added button to container via general class (approach 3)`);
+      }
+    }
+  }
+  
+  // APPROACH 4: Find by Library ID and walk up to container
+  if (newButtonsAdded === 0) {
+    // Find all elements with Library ID text
+    const libraryIdElements = Array.from(document.querySelectorAll('span')).filter(
+      span => span.textContent && span.textContent.includes('Library ID:')
+    );
+    
+    console.log(`Found ${libraryIdElements.length} Library ID spans`);
+    
+    for (const idEl of libraryIdElements) {
+      const adContainer = findAdCardContainer(idEl);
+      
+      if (adContainer) {
+        const adId = getAdIdentifier(adContainer);
+        
+        if (!processedAds.has(adId) && !adContainer.querySelector('.my-fb-ad-button')) {
+          processedAds.add(adId);
+          addButtonToContainer(adContainer);
+          newButtonsAdded++;
+          console.log(`Added button to container via Library ID (approach 4)`);
+        }
+      }
+    }
+  }
+  
+  // Log the results
+  if (newButtonsAdded > 0) {
+    console.log(`Added ${newButtonsAdded} new download buttons`);
+  } else {
+    console.log('No new ad containers found');
+  }
+  
+  return newButtonsAdded;
 }
 
+// Helper function to find the ad card container by walking up from a Library ID element
 function findAdCardContainer(element) {
   // Walk up to find the container that is likely an ad card
   let current = element;
@@ -391,26 +460,20 @@ function findAdCardContainer(element) {
     
     if (!current) break;
     
-    // Check if this could be an ad card
+    // Check for your specific class combinations
+    if (current.classList.contains('xrvj5dj') && 
+        (current.classList.contains('x18m771g') || 
+         (current.parentElement && current.parentElement.classList.contains('x1dr75xp') && 
+          current.parentElement.classList.contains('xh8yej3') && 
+          current.parentElement.classList.contains('x16md763')))) {
+      return current;
+    }
+    
+    // Alternate check for general ad properties
     if (current.offsetWidth > 300 && current.offsetHeight > 250) {
-      // Must contain certain ad-related text
       const text = current.textContent || '';
-      const hasSeeAdDetails = text.includes('See ad details');
-      const hasStartedRunning = text.includes('Started running on');
-      const hasSponsored = text.includes('Sponsored');
-      
-      // Must have at least two of these characteristics to be an ad card
-      if ((hasSeeAdDetails && hasStartedRunning) || 
-          (hasSeeAdDetails && hasSponsored) || 
-          (hasStartedRunning && hasSponsored)) {
-        
-        // Additional check: must contain platform icons or total active time text
-        if (text.includes('Total active time') || 
-            current.querySelector('img[src*="facebook"]') || 
-            current.querySelector('svg[class*="platform"]')) {
-          
-          return current;
-        }
+      if (text.includes('Library ID:') && text.includes('Started running on')) {
+        return current;
       }
     }
   }
@@ -418,49 +481,121 @@ function findAdCardContainer(element) {
   return null;
 }
 
-
-// Set up observer to watch for new ads being loaded
-// const observer = new MutationObserver(addButtonsToAds);
-// observer.observe(document.body, { childList: true, subtree: true });
-
-// Set up observer to watch for new content
-const observer = new MutationObserver((mutations) => {
-  let shouldCheck = false;
+// Improved mutation observer that uses a more efficient detection strategy
+function setupMutationObserver() {
+  // Use a debounce mechanism to avoid excessive processing
+  let debounceTimer = null;
   
-  for (const mutation of mutations) {
-    if (mutation.addedNodes.length > 0) {
-      // Check if any substantial elements were added
-      for (const node of mutation.addedNodes) {
-        if (node.nodeType === 1 && (node.tagName === 'DIV' || node.tagName === 'SECTION')) {
-          shouldCheck = true;
-          break;
+  const observer = new MutationObserver((mutations) => {
+    let shouldProcess = false;
+    
+    // Quick check if any mutations are relevant (avoiding unnecessary processing)
+    for (const mutation of mutations) {
+      if (mutation.addedNodes.length > 0) {
+        for (const node of mutation.addedNodes) {
+          // Check if this looks like it could be an ad or container
+          if (node.nodeType === Node.ELEMENT_NODE) {
+            // Check for classes we care about
+            if (node.classList && 
+                (node.classList.contains('xh8yej3') || 
+                 node.classList.contains('xrvj5dj') || 
+                 node.classList.contains('x1dr75xp') || 
+                 node.classList.contains('x18m771g'))) {
+              shouldProcess = true;
+              break;
+            }
+            
+            // Check if it's a substantial element that might contain ads
+            if (node.tagName === 'DIV' && node.childElementCount > 3) {
+              shouldProcess = true;
+              break;
+            }
+          }
         }
+        
+        if (shouldProcess) break;
       }
-      
-      if (shouldCheck) break;
     }
-  }
+    
+    if (shouldProcess) {
+      // Clear existing timer if there is one
+      if (debounceTimer) clearTimeout(debounceTimer);
+      
+      // Set a new timer
+      debounceTimer = setTimeout(() => {
+        console.log('Content change detected, checking for new ads...');
+        findAndProcessAdCards();
+      }, 300);
+    }
+  });
   
-  if (shouldCheck) {
-    // Wait a bit for the content to fully render
-    setTimeout(addButtonsToAds, 500);
-  }
-});
+  // Start observing with appropriate options
+  observer.observe(document.body, {
+    childList: true,
+    subtree: true
+  });
+  
+  console.log('Mutation observer set up');
+  return observer;
+}
 
-// Start observing with appropriate options
-observer.observe(document.body, {
-  childList: true,
-  subtree: true
-});
+// Improved scroll handler with better debouncing
+function setupScrollHandler() {
+  let scrollTimer = null;
+  let lastScrollPos = window.scrollY;
+  let scrollPending = false;
+  
+  window.addEventListener('scroll', () => {
+    // Capture the current scroll position
+    const currentPos = window.scrollY;
+    
+    // If we've scrolled significantly and we haven't processed recently
+    if (Math.abs(currentPos - lastScrollPos) > 200 && !scrollPending) {
+      lastScrollPos = currentPos;
+      scrollPending = true;
+      
+      // Clear existing timer
+      if (scrollTimer) clearTimeout(scrollTimer);
+      
+      // Set a new timer
+      scrollTimer = setTimeout(() => {
+        console.log('Processing after scroll...');
+        findAndProcessAdCards();
+        scrollPending = false;
+      }, 1500);
+    }
+  });
+  
+  console.log('Scroll handler set up');
+}
 
-// Add periodic checker as a backup
-setInterval(addButtonsToAds, 3000);
+// Initialization function
+function initialize() {
+  console.log('Facebook Ads Library Scraper initializing...');
+  
+  // Initial scan after a short delay to allow page to fully load
+  setTimeout(() => {
+    console.log('Initial scan for ad cards...');
+    const count = findAndProcessAdCards();
+    console.log(`Initial scan found ${count} ads`);
+  }, 1500);
+  
+  // Set up mutation observer
+  const observer = setupMutationObserver();
+  
+  // Set up scroll handler
+  setupScrollHandler();
+  
+  // Fallback interval checker to catch any missed ads
+  // This helps with lazy-loaded content and other edge cases
+  setInterval(() => {
+    console.log('Periodic scan for ads...');
+    findAndProcessAdCards();
+  }, 1500);
+  
+  console.log('Facebook Ads Library Scraper initialized successfully!');
+}
 
-// Initial run to add buttons to existing ads
-addButtonsToAds();
+// Start the extension
+initialize();
 
-// Run when user scrolls to catch any new ads
-window.addEventListener('scroll', addButtonsToAds);
-
-// Console log to show the extension is loaded
-console.log("Facebook Ads Library Scraper loaded!");
