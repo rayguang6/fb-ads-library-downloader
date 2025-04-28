@@ -1,10 +1,121 @@
-const SUPABASE_URL = 'https://scblfinzevcnuzibkhgt.supabase.co';
-const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNjYmxmaW56ZXZjbnV6aWJraGd0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDI1NTM1MDcsImV4cCI6MjA1ODEyOTUwN30.tYsF007oi9FgrfQIxvo-quaaH6TbUqDQ_Pb1sVKy4fo';
-const STORAGE_BUCKET = 'ads-media';
-const DATABASE_TABLE = 'facebook_ads';
-
-// Cache to prevent duplicate processing
+// Global variables
 const processedAds = new Set();
+let currentUser = null;
+
+// Wait for config to be available
+function waitForConfig() {
+    return new Promise((resolve, reject) => {
+        let attempts = 0;
+        const maxAttempts = 50;
+        const checkConfig = () => {
+            try {
+                if (window.config) {
+                    console.log('Config found:', {
+                        url: window.config.SUPABASE_URL ? 'present' : 'missing',
+                        key: window.config.SUPABASE_KEY ? 'present' : 'missing',
+                        bucket: window.config.STORAGE_BUCKET ? 'present' : 'missing',
+                        table: window.config.DATABASE_TABLE ? 'present' : 'missing'
+                    });
+                    resolve(window.config);
+                    return true;
+                }
+                return false;
+            } catch (error) {
+                console.error('Error checking config:', error);
+                return false;
+            }
+        };
+
+        // Check immediately first
+        if (checkConfig()) return;
+
+        // Then set up interval
+        const interval = setInterval(() => {
+            attempts++;
+            if (checkConfig() || attempts >= maxAttempts) {
+                clearInterval(interval);
+                if (attempts >= maxAttempts) {
+                    const error = new Error('Config not loaded after maximum attempts');
+                    console.error(error);
+                    reject(error);
+                }
+            }
+        }, 100);
+    });
+}
+
+// Initialize extension using IIFE
+(async () => {
+    try {
+        console.log('Starting extension initialization...');
+        
+        // Wait for config to be loaded
+        const loadedConfig = await waitForConfig();
+        console.log('Configuration loaded successfully');
+        
+        // Initialize the extension
+        await initialize();
+        console.log('Extension initialized successfully');
+    } catch (error) {
+        console.error('Failed to initialize extension:', error);
+        console.error('Stack trace:', error.stack);
+    }
+})();
+
+// Function to get the current user session
+async function getCurrentUser() {
+    try {
+        const result = await chrome.storage.local.get(['userSession', 'sessionTimestamp']);
+        console.log('Storage data:', result);
+        
+        if (result.userSession) {
+            console.log('Session details:', {
+                email: result.userSession.email,
+                id: result.userSession.id,
+                hasAccessToken: !!result.userSession.access_token,
+                timestamp: result.sessionTimestamp
+            });
+            return result.userSession;
+        }
+        console.log('No user session found');
+        return null;
+    } catch (error) {
+        console.error('Error getting user session:', error);
+        return null;
+    }
+}
+
+// Function to check if user is authenticated
+async function checkAuthentication() {
+  try {
+    const user = await getCurrentUser();
+    console.log('Authentication check:', {
+      hasUser: !!user,
+      hasAccessToken: user?.access_token ? 'yes' : 'no',
+      tokenLength: user?.access_token?.length,
+      userId: user?.id,
+      email: user?.email
+    });
+
+    if (!user || !user.access_token) {
+      console.log('User not authenticated or missing access token');
+      return false;
+    }
+
+    // Validate token format
+    if (typeof user.access_token !== 'string' || user.access_token.length < 10) {
+      console.error('Invalid access token format');
+      return false;
+    }
+
+    currentUser = user;
+    console.log('User authenticated:', user.email);
+    return true;
+  } catch (error) {
+    console.error('Error in checkAuthentication:', error);
+    return false;
+  }
+}
 
 // Function to extract data from an ad container
 function extractAdData(adContainer) {
@@ -140,10 +251,38 @@ function extractAdData(adContainer) {
   return adData;
 }
 
-// Function to upload media to Supabase
-async function uploadToSupabase(mediaUrl, mediaType, fileName) {
+// Function to generate safe filename
+function generateSafeFileName(name) {
+  return name.replace(/[^a-z0-9]/gi, '_').toLowerCase();
+}
+
+// Function to upload media to Supabase with improved error handling
+async function uploadToSupabase(mediaUrl, options) {
+  if (!await checkAuthentication()) {
+    throw new Error('User not authenticated');
+  }
+
+  const {
+    mediaType = 'image',
+    libraryId
+  } = options;
+
   try {
+    // Get the session token
+    const session = await chrome.storage.local.get(['userSession']);
+    console.log('Upload session check:', {
+      hasSession: !!session.userSession,
+      hasAccessToken: !!session.userSession?.access_token,
+      userId: session.userSession?.id,
+      tokenLength: session.userSession?.access_token?.length
+    });
+
+    if (!session.userSession?.access_token) {
+      throw new Error('No valid session token found');
+    }
+
     // Fetch the media file
+    console.log('Fetching media from URL:', mediaUrl);
     const response = await fetch(mediaUrl);
     if (!response.ok) {
       throw new Error(`Failed to fetch media: ${response.status} ${response.statusText}`);
@@ -151,40 +290,88 @@ async function uploadToSupabase(mediaUrl, mediaType, fileName) {
     
     // Get the file as a blob
     const blob = await response.blob();
-    
-    // Set file extension based on media type
-    const fileExt = mediaType === 'video' ? 'mp4' : 'jpg';
-    const fullFileName = `${fileName}.${fileExt}`;
-    const file = new File([blob], fullFileName, { 
-      type: mediaType === 'video' ? 'video/mp4' : 'image/jpeg' 
+    console.log('Media blob:', {
+      size: blob.size,
+      type: blob.type,
+      isEmpty: blob.size === 0
     });
+
+    if (blob.size === 0) {
+      throw new Error('Retrieved empty blob from media URL');
+    }
     
-    // Prepare form data for the upload
+    // Set file extension based on content type
+    let fileExt;
+    if (blob.type.includes('video')) {
+      fileExt = 'mp4';
+    } else if (blob.type.includes('image')) {
+      fileExt = blob.type.includes('png') ? 'png' : 'jpg';
+    } else {
+      console.warn('Unexpected media type:', blob.type);
+      fileExt = mediaType === 'video' ? 'mp4' : 'jpg';
+    }
+
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const folderPath = `${session.userSession.id}/${libraryId}`;
+    const fileName = `${timestamp}.${fileExt}`;
+    const fullFileName = `${folderPath}/${fileName}`;
+    
+    console.log('Upload details:', {
+      path: fullFileName,
+      contentType: blob.type,
+      size: blob.size
+    });
+
+    // Create FormData and append file with correct content type
     const formData = new FormData();
-    formData.append('file', file);
+    formData.append('file', new File([blob], fileName, { type: blob.type }));
     
-    // Construct the upload URL (Supabase Storage endpoint)
-    const uploadPath = `${SUPABASE_URL}/storage/v1/object/${STORAGE_BUCKET}/${fullFileName}`;
+    // Construct the upload URL
+    const uploadPath = `${config.SUPABASE_URL}/storage/v1/object/${config.STORAGE_BUCKET}/${fullFileName}`;
     
-    // Make the POST request to upload the file
+    console.log('Making upload request to:', uploadPath);
+    
+    // Make the POST request with explicit content type from blob
     const uploadResponse = await fetch(uploadPath, {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${SUPABASE_KEY}`,
-        'apikey': SUPABASE_KEY
+        'Authorization': `Bearer ${session.userSession.access_token}`,
+        'apikey': config.SUPABASE_KEY
       },
       body: formData
     });
     
     if (!uploadResponse.ok) {
-      const errorData = await uploadResponse.json();
-      throw new Error(`Supabase upload failed: ${errorData.error || uploadResponse.statusText}`);
+      const errorText = await uploadResponse.text();
+      console.error('Upload response error:', {
+        status: uploadResponse.status,
+        statusText: uploadResponse.statusText,
+        responseText: errorText,
+        headers: Object.fromEntries(uploadResponse.headers.entries())
+      });
+      throw new Error(`Supabase upload failed: ${uploadResponse.status} ${uploadResponse.statusText} - ${errorText}`);
     }
     
     const result = await uploadResponse.json();
+    console.log('Upload success:', result);
     
-    // Create the public URL for the stored file (based on Supabase docs)
-    const publicUrl = `${SUPABASE_URL}/storage/v1/object/public/${STORAGE_BUCKET}/${fullFileName}`;
+    // Create and verify the public URL
+    const publicUrl = `${config.SUPABASE_URL}/storage/v1/object/public/${config.STORAGE_BUCKET}/${fullFileName}`;
+    
+    // Verify the uploaded file is accessible
+    try {
+      const verifyResponse = await fetch(publicUrl, { method: 'HEAD' });
+      if (!verifyResponse.ok) {
+        console.error('Uploaded file verification failed:', {
+          status: verifyResponse.status,
+          statusText: verifyResponse.statusText
+        });
+      } else {
+        console.log('Uploaded file verified successfully');
+      }
+    } catch (error) {
+      console.error('Error verifying uploaded file:', error);
+    }
     
     return { result, publicUrl };
   } catch (error) {
@@ -194,45 +381,71 @@ async function uploadToSupabase(mediaUrl, mediaType, fileName) {
 }
 
 // Function to save ad data to Supabase database
-async function saveToSupabaseDatabase(adData, publicFileUrl = null) {
+async function saveToSupabaseDatabase(adData, uploadedFiles = {}) {
+  if (!await checkAuthentication()) {
+    throw new Error('User not authenticated');
+  }
+
   try {
-    // Prepare a record mapping your adData fields to the database columns.
-    // Ensure your Supabase table has matching column names.
+    // Get the session token
+    const session = await chrome.storage.local.get(['userSession']);
+    console.log('Database save session check:', {
+      hasSession: !!session.userSession,
+      hasAccessToken: !!session.userSession?.access_token,
+      userId: session.userSession?.id
+    });
+
+    if (!session.userSession?.access_token) {
+      throw new Error('No valid session token found');
+    }
+
+    // Prepare the record for insertion with new schema
     const record = {
-      library_id: adData.libraryId || '',
-      started_running_on: adData.startedRunningOn || '',
-      advertiser_profile_image: adData.advertiserProfileImage || '',
-      advertiser_profile_link: adData.advertiserProfileLink || '',
-      advertiser_name: adData.advertiserName || '',
-      ad_text: adData.adText || '',
-      media_type: adData.mediaUrls.length > 0 ? adData.mediaUrls[0].type : '',
-      // Use the publicFileUrl from the upload, or if not available, the URL from adData
-      media_url: publicFileUrl || (adData.mediaUrls.length > 0 ? adData.mediaUrls[0].url : ''),
-      captured_at: adData.timestamp || new Date().toISOString()
+      user_id: session.userSession.id,
+      library_id: adData.libraryId,
+      started_running_on: adData.startedRunningOn,
+      profile_image_url: uploadedFiles.profileImage,
+      advertiser_profile_link: adData.advertiserProfileLink,
+      advertiser_name: adData.advertiserName,
+      ad_text: adData.adText,
+      media_type: adData.mediaUrls[0]?.type || null,
+      media_url: uploadedFiles.adMedia?.[0]?.url || null,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
     };
 
-    const response = await fetch(`${SUPABASE_URL}/rest/v1/${DATABASE_TABLE}`, {
+    console.log('Saving record to database:', {
+      libraryId: record.library_id,
+      userId: record.user_id,
+      advertiserName: record.advertiser_name
+    });
+
+    // Make the POST request to insert the record
+    const response = await fetch(`${config.SUPABASE_URL}/rest/v1/${config.DATABASE_TABLE}`, {
       method: 'POST',
       headers: {
+        'Authorization': `Bearer ${session.userSession.access_token}`,
+        'apikey': config.SUPABASE_KEY,
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${SUPABASE_KEY}`,
-        'apikey': SUPABASE_KEY,
-        'Prefer': 'return=representation'
+        'Prefer': 'return=minimal'
       },
       body: JSON.stringify(record)
     });
-    
+
     if (!response.ok) {
       const errorText = await response.text();
-      console.error('Database insert error:', errorText);
-      throw new Error(`Database insert failed: ${response.status} - ${errorText}`);
+      console.error('Database save error:', {
+        status: response.status,
+        statusText: response.statusText,
+        responseText: errorText
+      });
+      throw new Error(`Database insertion failed: ${response.status} ${response.statusText} - ${errorText}`);
     }
-    
-    const result = await response.json();
-    console.log('Database insert successful:', result);
-    return result;
+
+    console.log('Successfully saved ad data to database:', adData.libraryId);
+    return true;
   } catch (error) {
-    console.error('Error saving to Supabase database:', error);
+    console.error('Error saving to database:', error);
     throw error;
   }
 }
@@ -267,6 +480,60 @@ function addButtonToContainer(container) {
     event.preventDefault();
     event.stopPropagation();
     
+    // Check authentication first
+    if (!await checkAuthentication()) {
+      // Show login prompt
+      button.textContent = 'Please Login';
+      button.style.backgroundColor = '#FFA500'; // Orange
+      
+      // Create a popup message with fixed dismissal
+      const loginPrompt = document.createElement('div');
+      loginPrompt.style.cssText = `
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        background: white;
+        padding: 20px;
+        border-radius: 8px;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        z-index: 10000;
+        text-align: center;
+      `;
+      
+      const dismissButton = document.createElement('button');
+      dismissButton.textContent = 'OK';
+      dismissButton.style.cssText = `
+        padding: 5px 15px;
+        margin-top: 15px;
+        cursor: pointer;
+        background: #800080;
+        color: white;
+        border: none;
+        border-radius: 4px;
+      `;
+      
+      loginPrompt.innerHTML = `
+        <h3 style="margin: 0 0 10px">Login Required</h3>
+        <p style="margin: 0 0 15px">Please click the extension icon and login to download ads.</p>
+      `;
+      loginPrompt.appendChild(dismissButton);
+      
+      // Ensure proper cleanup on dismiss
+      dismissButton.addEventListener('click', () => {
+        loginPrompt.remove();
+      });
+      
+      document.body.appendChild(loginPrompt);
+      
+      // Reset button after delay
+      setTimeout(() => {
+        button.textContent = 'Download ↓';
+        button.style.backgroundColor = '#800080';
+      }, 3000);
+      return;
+    }
+    
     // Get ad data from the container
     const adData = extractAdData(container);
     
@@ -275,28 +542,44 @@ function addButtonToContainer(container) {
     button.style.backgroundColor = '#FFA500'; // Orange
     
     try {
-      // Generate a filename using advertiser name, library ID, and timestamp
-      let fileName = 'fb_ad';
-      if (adData.advertiserName) {
-        const safeAdvertiserName = adData.advertiserName.replace(/[^a-z0-9]/gi, '_').toLowerCase();
-        fileName = `${safeAdvertiserName}`;
+      const uploadedFiles = {
+        profileImage: null,
+        adMedia: []
+      };
+
+      // Upload profile image if exists
+      if (adData.advertiserProfileImage) {
+        try {
+          const profileUpload = await uploadToSupabase(adData.advertiserProfileImage, {
+            mediaType: 'image',
+            libraryId: adData.libraryId,
+            isProfileImage: true
+          });
+          uploadedFiles.profileImage = profileUpload.publicUrl;
+        } catch (error) {
+          console.error('Failed to upload profile image:', error);
+        }
       }
-      if (adData.libraryId) {
-        fileName += `_${adData.libraryId}`;
-      }
-      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-      fileName += `_${timestamp}`;
-      
-      // If media exists, upload it
-      let publicUrl = null;
-      if (adData.mediaUrls.length > 0) {
-        const media = adData.mediaUrls[0];
-        const uploadResult = await uploadToSupabase(media.url, media.type, fileName);
-        publicUrl = uploadResult.publicUrl;
+
+      // Upload ad media
+      for (const media of adData.mediaUrls) {
+        try {
+          const mediaUpload = await uploadToSupabase(media.url, {
+            mediaType: media.type,
+            libraryId: adData.libraryId,
+            isProfileImage: false
+          });
+          uploadedFiles.adMedia.push({
+            url: mediaUpload.publicUrl,
+            type: media.type
+          });
+        } catch (error) {
+          console.error('Failed to upload ad media:', error);
+        }
       }
       
       // Save the ad data to Supabase database
-      await saveToSupabaseDatabase(adData, publicUrl);
+      await saveToSupabaseDatabase(adData, uploadedFiles);
       
       // Visual feedback for success
       button.textContent = 'Uploaded!';
@@ -351,7 +634,7 @@ function findAndProcessAdCards() {
   // APPROACH 1: Directly target your specific class combinations
   // First try: parent class x1dr75xp.xh8yej3.x16md763 with child xrvj5dj
   const specificParents = document.querySelectorAll('.x1dr75xp.xh8yej3.x16md763');
-  console.log(`Found ${specificParents.length} specific parent containers`);
+  // console.log(`Found ${specificParents.length} specific parent containers`);
   
   for (const parent of specificParents) {
     const childContainers = parent.querySelectorAll('.xrvj5dj');
@@ -366,7 +649,7 @@ function findAndProcessAdCards() {
         processedAds.add(adId);
         addButtonToContainer(container);
         newButtonsAdded++;
-        console.log(`Added button to container via specific classes (approach 1)`);
+        // console.log(`Added button to container via specific classes (approach 1)`);
       }
     }
   }
@@ -374,7 +657,7 @@ function findAndProcessAdCards() {
   // APPROACH 2: Try the alternative class selector xrvj5dj.x18m771g
   if (newButtonsAdded === 0) {
     const altContainers = document.querySelectorAll('.xrvj5dj.x18m771g');
-    console.log(`Found ${altContainers.length} containers with alternative classes`);
+    // console.log(`Found ${altContainers.length} containers with alternative classes`);
     
     for (const container of altContainers) {
       // Skip small containers
@@ -386,7 +669,7 @@ function findAndProcessAdCards() {
         processedAds.add(adId);
         addButtonToContainer(container);
         newButtonsAdded++;
-        console.log(`Added button to container via alternative classes (approach 2)`);
+        // console.log(`Added button to container via alternative classes (approach 2)`);
       }
     }
   }
@@ -394,7 +677,7 @@ function findAndProcessAdCards() {
   // APPROACH 3: General search for containers with xh8yej3 class
   if (newButtonsAdded === 0) {
     const generalContainers = document.querySelectorAll('div.xh8yej3');
-    console.log(`Found ${generalContainers.length} potential containers with xh8yej3 class`);
+    // console.log(`Found ${generalContainers.length} potential containers with xh8yej3 class`);
     
     for (const container of generalContainers) {
       // Skip if it doesn't match size criteria or doesn't have Library ID
@@ -407,7 +690,7 @@ function findAndProcessAdCards() {
         processedAds.add(adId);
         addButtonToContainer(container);
         newButtonsAdded++;
-        console.log(`Added button to container via general class (approach 3)`);
+        // console.log(`Added button to container via general class (approach 3)`);
       }
     }
   }
@@ -419,7 +702,7 @@ function findAndProcessAdCards() {
       span => span.textContent && span.textContent.includes('Library ID:')
     );
     
-    console.log(`Found ${libraryIdElements.length} Library ID spans`);
+    // console.log(`Found ${libraryIdElements.length} Library ID spans`);
     
     for (const idEl of libraryIdElements) {
       const adContainer = findAdCardContainer(idEl);
@@ -431,7 +714,7 @@ function findAndProcessAdCards() {
           processedAds.add(adId);
           addButtonToContainer(adContainer);
           newButtonsAdded++;
-          console.log(`Added button to container via Library ID (approach 4)`);
+          // console.log(`Added button to container via Library ID (approach 4)`);
         }
       }
     }
@@ -439,9 +722,9 @@ function findAndProcessAdCards() {
   
   // Log the results
   if (newButtonsAdded > 0) {
-    console.log(`Added ${newButtonsAdded} new download buttons`);
+    // console.log(`Added ${newButtonsAdded} new download buttons`);
   } else {
-    console.log('No new ad containers found');
+    // console.log('No new ad containers found');
   }
   
   return newButtonsAdded;
@@ -523,7 +806,7 @@ function setupMutationObserver() {
       
       // Set a new timer
       debounceTimer = setTimeout(() => {
-        console.log('Content change detected, checking for new ads...');
+        // console.log('Content change detected, checking for new ads...');
         findAndProcessAdCards();
       }, 300);
     }
@@ -535,7 +818,7 @@ function setupMutationObserver() {
     subtree: true
   });
   
-  console.log('Mutation observer set up');
+  // console.log('Mutation observer set up');
   return observer;
 }
 
@@ -559,43 +842,37 @@ function setupScrollHandler() {
       
       // Set a new timer
       scrollTimer = setTimeout(() => {
-        console.log('Processing after scroll...');
+        // console.log('Processing after scroll...');
         findAndProcessAdCards();
         scrollPending = false;
       }, 1500);
     }
   });
   
-  console.log('Scroll handler set up');
+  // console.log('Scroll handler set up');
 }
 
-// Initialization function
-function initialize() {
-  console.log('Facebook Ads Library Scraper initializing...');
+// Update initialize function to be async
+async function initialize() {
+  console.log('Initializing Facebook Ads Library Downloader...');
   
-  // Initial scan after a short delay to allow page to fully load
-  setTimeout(() => {
-    console.log('Initial scan for ad cards...');
-    const count = findAndProcessAdCards();
-    console.log(`Initial scan found ${count} ads`);
-  }, 1500);
-  
-  // Set up mutation observer
-  const observer = setupMutationObserver();
-  
-  // Set up scroll handler
-  setupScrollHandler();
-  
-  // Fallback interval checker to catch any missed ads
-  // This helps with lazy-loaded content and other edge cases
-  setInterval(() => {
-    console.log('Periodic scan for ads...');
+  try {
+    // Check authentication first
+    if (!await checkAuthentication()) {
+      console.log('Please log in to use the Facebook Ads Library Downloader');
+      return;
+    }
+
+    // Set up observers and handlers
+    setupMutationObserver();
+    setupScrollHandler();
+    
+    // Initial scan for ads
     findAndProcessAdCards();
-  }, 1500);
-  
-  console.log('Facebook Ads Library Scraper initialized successfully!');
+    
+    console.log('Initialization complete');
+  } catch (error) {
+    console.error('Initialization failed:', error);
+  }
 }
-
-// Start the extension
-initialize();
 

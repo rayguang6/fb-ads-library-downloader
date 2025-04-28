@@ -3,10 +3,23 @@
   "name": "Facebook Ads Library Downloader",
   "version": "1.0",
   "description": "Extract and download Facebook Ads Library content as JSON",
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
   "content_scripts": [
     {
       "matches": ["*://*.facebook.com/ads/library/*"],
-      "js": ["content.js"],
+      "js": ["config.js", "content.js"],
       "run_at": "document_end",
       "all_frames": true
     }
@@ -18,10 +31,14 @@
   ],
   "host_permissions": [
     "*://*.facebook.com/*",
+    "https://cnxkfuwuoahnhxbcnnol.supabase.co/*",
     "https://scblfinzevcnuzibkhgt.supabase.co/*"
   ],
   "web_accessible_resources": [{
-    "resources": ["content.js"],
+    "resources": ["content.js", "lib/supabase.js", "privacy-policy.html", "config.js"],
     "matches": ["*://*.facebook.com/*"]
-  }]
+  }],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'"
+  }
 }

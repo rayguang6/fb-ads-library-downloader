@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Facebook Ads Library Downloader</title>
+  <style>
+    body {
+      width: 300px;
+      padding: 15px;
+      font-family: Arial, sans-serif;
+    }
+    
+    .view {
+      display: none;
+    }
+    
+    input {
+      width: 100%;
+      padding: 8px;
+      margin: 5px 0;
+      box-sizing: border-box;
+    }
+    
+    button {
+      width: 100%;
+      padding: 10px;
+      background-color: #4285f4;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      margin-top: 10px;
+    }
+    
+    button:hover {
+      background-color: #357abd;
+    }
+    
+    button:disabled {
+      background-color: #cccccc;
+      cursor: not-allowed;
+    }
+    
+    .loading {
+      position: relative;
+      cursor: wait;
+    }
+    
+    .loading:after {
+      content: '';
+      position: absolute;
+      width: 16px;
+      height: 16px;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      margin: auto;
+      border: 4px solid transparent;
+      border-top-color: #ffffff;
+      border-radius: 50%;
+      animation: loading-spinner 1s ease infinite;
+    }
+    
+    @keyframes loading-spinner {
+      from {transform: rotate(0turn)}
+      to {transform: rotate(1turn)}
+    }
+    
+    #status {
+      display: none;
+      padding: 10px;
+      margin: 10px 0;
+      border-radius: 4px;
+    }
+    
+    .success {
+      background-color: #d4edda;
+      color: #155724;
+      border: 1px solid #c3e6cb;
+    }
+    
+    .error {
+      background-color: #f8d7da;
+      color: #721c24;
+      border: 1px solid #f5c6cb;
+    }
+  </style>
+</head>
+<body>
+  <div id="status"></div>
+  
+  <div id="loginView" class="view">
+    <h3>Login to Download Ads</h3>
+    <input type="email" id="email" placeholder="Email" />
+    <input type="password" id="password" placeholder="Password" />
+    <button id="loginBtn">Login</button>
+  </div>
+  
+  <div id="loggedInView" class="view">
+    <p>Logged in as: <span id="userEmail"></span></p>
+    <button id="logoutBtn">Logout</button>
+  </div>
+
+  <!-- Load config first -->
+  <script src="config.js"></script>
+  <!-- Load Supabase -->
+  <script src="lib/supabase.js"></script>
+  <!-- Load main popup script -->
+  <script src="popup.js"></script>
+</body>
+</html> 
